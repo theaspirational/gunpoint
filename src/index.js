@@ -4,7 +4,7 @@ const marked = require('marked');
 const Gun = require('gun');
 const TerminalRenderer = require('marked-terminal');
 
-const { port, options, token } = require('./config.json');
+const { admin_telegram, port, options, token } = require('./config.json');
 
 const TOKEN = process.env.TELEGRAM_TOKEN || token;
 const url = 'https://shadow-link.tk';
@@ -38,6 +38,36 @@ if (options.peers.length === 0) {
   });
 }
 
+
+// -- Json to table --------------------------------------------------------
+
+const clsMap = [
+  [/^".*:$/, "red"],
+  [/^"/, "green"],
+  [/true|false/, "blue"],
+  [/null/, "magenta"],
+  [/.*/, "darkorange"],
+]
+
+const syntaxHighlight = obj => JSON.stringify(obj, null, 4)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, match => `<span style="color:${clsMap.find(([regex]) => regex.test(match))[1]}">${match}</span>`);
+
+
+const row = html => `<tr>\n${html}</tr>\n`,
+  heading = object => row(Object.keys(object).reduce((html, heading) => (html + `<th>${heading}</th>`), '')),
+  datarow = object => row(Object.values(object).reduce((html, value) => (html + `<td>${value}</td>`), ''));
+
+function htmlTable(dataList) {
+  return `<table>
+            ${heading(dataList[0])}
+            ${dataList.reduce((html, object) => (html + datarow(object)), '')}
+          </table>`
+}
+
+
 // -- Telegram api --------------------------------------------------------
 // We are receiving updates at the route below!
 app.post(`/bot${TOKEN}`, (req, res) => {
@@ -45,10 +75,28 @@ app.post(`/bot${TOKEN}`, (req, res) => {
   res.sendStatus(200);
 });
 
+const onStartMessage = `HI! 
+List of commands:
+[ /subscribe account-name ] - subscribe for your shadow-link contacts profile updates`
 
-// Just to ping!
-bot.on('message', msg => {
-  bot.sendMessage(msg.chat.id, 'I am alive!');
+const onSubscribeMessage = `HI! 
+Send me:
+"/subscribe account-name" to subscribe for your shadow-link account watchlist updates`
+
+bot.onText(/\/start/, (msg) => {
+  const { chat: { id } } = msg
+  bot.sendMessage(id, onStartMessage)
+});
+
+bot.onText(/\/subscribe (.+)/, (msg, [source, match]) => {
+  const { chat: { id } } = msg
+
+  let gun_user = gun.get("telegram-users").get(match)
+  gun_user.put({ telegramID: id })
+
+  gun.get("telegram-bot").get("subscribers").set(gun_user)
+
+  bot.sendMessage(id, onSubscribeMessage)
 });
 
 // -- Gun api --------------------------------------------------------
@@ -64,22 +112,38 @@ app.get('/get/:key', (req, res) => {
   toFetch.once((data) => { res.status(200).send({ data: data }) })
 });
 
-app.get('/get/profile/:key', (req, res) => {
+app.get('/get/:key/:key2', (req, res) => {
 
-  const { key } = req.params;
+  const { key, key2 } = req.params;
 
-  let toFetch = gun.get('profile').get(key);
-  toFetch.once((data) => { res.status(200).send({ data: data }) })
+  let toFetch = gun.get(key).get(key2);
+  toFetch.once((data) => { res.status(200).send(syntaxHighlight({ data: data })) })
 });
 
+app.get('/user/:pub', (req, res) => {
+
+  const { pub } = req.params;
+
+  let toFetch = gun.user(pub);
+  toFetch.map().once((data) => { if (data) bot.sendMessage(admin_telegram, JSON.stringify({ data: data })) })
+});
 
 app.get('/user/:pub/:key', (req, res) => {
 
   const { pub, key } = req.params;
 
   let toFetch = gun.user(pub).get(key);
-  toFetch.once((data) => { res.status(200).send({ data: data }) })
+  toFetch.map().once((data) => { if (data) bot.sendMessage(admin_telegram, JSON.stringify({ data: data })) })
 });
+
+app.get('/user/:pub/:key/:key2', (req, res) => {
+
+  const { pub, key, key2 } = req.params;
+
+  let toFetch = gun.user(pub).get(key).get(key2);
+  toFetch.map().once((data) => { if (data) bot.sendMessage(admin_telegram, JSON.stringify({ data: data })) })
+});
+
 
 app.post('/put/:key', (req, res) => {
 
